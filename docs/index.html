@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noteit widget — Google Play отзывы</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root { --bg:#0f1115; --card:#181c24; --text:#e6e8ee; --muted:#9aa3b2; --accent:#5b8cff; --border:#262c38; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:24px 32px 8px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; }
+  .wrap { padding:16px 32px 48px; max-width:1400px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin:16px 0 24px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .card .v { font-size:24px; font-weight:700; }
+  .card .l { color:var(--muted); font-size:12px; margin-top:2px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; margin-bottom:24px; }
+  .chart-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .chart-box h3 { margin:0 0 12px; font-size:14px; color:var(--muted); font-weight:600; }
+  .filters { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; align-items:center; }
+  input, select { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:14px; }
+  input[type=search] { flex:1; min-width:220px; }
+  label.ck { font-size:13px; color:var(--muted); display:flex; gap:6px; align-items:center; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { cursor:pointer; user-select:none; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; background:var(--bg); }
+  th .arr { color:var(--accent); }
+  td.text { max-width:520px; }
+  .stars { color:#f5b301; white-space:nowrap; }
+  .reply { margin-top:6px; padding:8px 10px; background:#1d2330; border-left:3px solid var(--accent); border-radius:6px; color:#c9d2e3; font-size:12px; }
+  .reply b { color:var(--accent); }
+  .muted { color:var(--muted); }
+  .pager { display:flex; gap:10px; align-items:center; margin-top:14px; font-size:13px; color:var(--muted); }
+  button { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  button:disabled { background:#2a3140; cursor:default; }
+  img.av { width:28px; height:28px; border-radius:50%; vertical-align:middle; }
+</style>
+</head>
+<body>
+<header>
+  <h1>noteit widget - by sendit <span class="muted" style="font-weight:400">(me.bukovitz.noteit)</span></h1>
+  <div class="sub">Все спарсенные отзывы Google Play · обновлено <span id="scrapedAt"></span></div>
+</header>
+<div class="wrap">
+  <div class="cards" id="cards"></div>
+  <div class="charts">
+    <div class="chart-box"><h3>Распределение оценок</h3><canvas id="chScore"></canvas></div>
+    <div class="chart-box"><h3>Отзывы по месяцам</h3><canvas id="chMonth"></canvas></div>
+  </div>
+  <div class="filters">
+    <input type="search" id="q" placeholder="Поиск по тексту, автору, версии…">
+    <select id="fScore"><option value="">Все оценки</option><option value="5">5★</option><option value="4">4★</option><option value="3">3★</option><option value="2">2★</option><option value="1">1★</option></select>
+    <select id="fLocale"><option value="">Все локали</option></select>
+    <select id="fVersion"><option value="">Все версии</option></select>
+    <label class="ck"><input type="checkbox" id="fReply"> только с ответом разработчика</label>
+  </div>
+  <div class="muted" style="font-size:13px;margin-bottom:8px" id="countLine"></div>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr>
+      <th data-k="at">Дата <span class="arr"></span></th>
+      <th data-k="user">Автор</th>
+      <th data-k="score">Оценка <span class="arr"></span></th>
+      <th data-k="likes">👍 <span class="arr"></span></th>
+      <th>Отзыв</th>
+      <th data-k="version">Версия</th>
+      <th>Локаль</th>
+    </tr></thead>
+    <tbody id="tb"></tbody>
+  </table>
+  </div>
+  <div class="pager">
+    <button id="prev">← Назад</button>
+    <span id="pageInfo"></span>
+    <button id="next">Вперёд →</button>
+  </div>
+</div>
+<script>
+const PAGE = 50;
+let reviews = [], filtered = [], sortKey = "at", sortDir = -1, page = 0;
+
+const esc = s => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const stars = n => "★".repeat(n) + "☆".repeat(5 - n);
+
+Promise.all([fetch("data/meta.json").then(r=>r.json()), fetch("data/reviews.json").then(r=>r.json())])
+  .then(([meta, rev]) => {
+    reviews = rev;
+    document.getElementById("scrapedAt").textContent = new Date(meta.scrapedAt).toLocaleString("ru-RU");
+    document.getElementById("cards").innerHTML = [
+      [meta.totalReviews.toLocaleString("ru-RU"), "отзывов спарсено"],
+      [meta.avgScore.toFixed(2) + " ★", "средняя оценка"],
+      [(meta.repliedCount/meta.totalReviews*100).toFixed(1) + "%", "с ответом разработчика"],
+      [meta.locales.length, "локалей"],
+    ].map(([v,l]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+
+    new Chart(chScore, {type:"bar", data:{labels:["1★","2★","3★","4★","5★"],
+      datasets:[{data:[1,2,3,4,5].map(k=>meta.scoreDist[k]||0), backgroundColor:["#e5534b","#e8873a","#e8c53a","#7bc86c","#4caf50"]}]},
+      options:{plugins:{legend:{display:false}}, scales:{y:{ticks:{color:"#9aa3b2"},grid:{color:"#262c38"}}, x:{ticks:{color:"#9aa3b2"},grid:{display:false}}}}});
+    const months = Object.keys(meta.byMonth);
+    new Chart(chMonth, {type:"line", data:{labels:months, datasets:[{data:months.map(m=>meta.byMonth[m]), borderColor:"#5b8cff", backgroundColor:"rgba(91,140,255,.15)", fill:true, tension:.3, pointRadius:0}]},
+      options:{plugins:{legend:{display:false}}, scales:{y:{ticks:{color:"#9aa3b2"},grid:{color:"#262c38"}}, x:{ticks:{color:"#9aa3b2",maxTicksLimit:12},grid:{display:false}}}}});
+
+    const loc = document.getElementById("fLocale");
+    meta.locales.forEach(([l,c]) => loc.add(new Option(`${l} (${c})`, l)));
+    const ver = document.getElementById("fVersion");
+    meta.topVersions.forEach(([v,c]) => ver.add(new Option(`${v} (${c})`, v)));
+    applyFilters();
+  });
+
+function applyFilters() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const sc = document.getElementById("fScore").value;
+  const lc = document.getElementById("fLocale").value;
+  const vs = document.getElementById("fVersion").value;
+  const rp = document.getElementById("fReply").checked;
+  filtered = reviews.filter(r =>
+    (!sc || r.score == sc) &&
+    (!lc || `${r.lang}-${r.country}` === lc) &&
+    (!vs || (r.version || "unknown") === vs) &&
+    (!rp || r.reply) &&
+    (!q || (r.text||"").toLowerCase().includes(q) || (r.user||"").toLowerCase().includes(q) || (r.version||"").toLowerCase().includes(q))
+  );
+  filtered.sort((a,b) => ((a[sortKey]??"") > (b[sortKey]??"") ? 1 : -1) * sortDir);
+  page = 0;
+  render();
+}
+
+function render() {
+  const total = filtered.length, pages = Math.max(1, Math.ceil(total / PAGE));
+  page = Math.min(page, pages - 1);
+  document.getElementById("countLine").textContent = `Показано ${total.toLocaleString("ru-RU")} из ${reviews.length.toLocaleString("ru-RU")} отзывов`;
+  const rows = filtered.slice(page*PAGE, (page+1)*PAGE).map(r => `<tr>
+    <td class="muted" style="white-space:nowrap">${esc((r.at||"").slice(0,10))}</td>
+    <td style="white-space:nowrap"><img class="av" loading="lazy" src="${esc(r.avatar)}" onerror="this.style.display='none'"> ${esc(r.user)}</td>
+    <td class="stars">${stars(r.score)}</td>
+    <td>${r.likes||0}</td>
+    <td class="text">${esc(r.text)}${r.reply ? `<div class="reply"><b>Ответ разработчика</b> (${esc((r.repliedAt||"").slice(0,10))}): ${esc(r.reply)}</div>` : ""}</td>
+    <td class="muted">${esc(r.version || "—")}</td>
+    <td class="muted">${esc(r.lang)}-${esc(r.country)}</td>
+  </tr>`).join("");
+  document.getElementById("tb").innerHTML = rows;
+  document.getElementById("pageInfo").textContent = `Стр. ${page+1} / ${pages}`;
+  document.getElementById("prev").disabled = page === 0;
+  document.getElementById("next").disabled = page >= pages - 1;
+}
+
+["q","fScore","fLocale","fVersion","fReply"].forEach(id =>
+  document.getElementById(id).addEventListener("input", applyFilters));
+document.getElementById("prev").onclick = () => { page--; render(); };
+document.getElementById("next").onclick = () => { page++; render(); };
+document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
+  const k = th.dataset.k;
+  if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = -1; }
+  filtered.sort((a,b) => ((a[sortKey]??"") > (b[sortKey]??"") ? 1 : -1) * sortDir);
+  page = 0; render();
+});
+</script>
+</body>
+</html>
